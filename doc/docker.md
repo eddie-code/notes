@@ -1,6 +1,6 @@
 [TOC]
 
-[1. 什么是Docker](#1- 什么是Docker)
+[1. 什么是Docker](#1-什么是Docker)
 
 #  Docker 容器技术入门与进阶
 
