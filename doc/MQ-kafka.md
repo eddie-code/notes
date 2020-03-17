@@ -1,6 +1,39 @@
+[TOC]
+
+##  目录
+
+- [kafka消息队列应用实战-分析与安装](#kafka消息队列应用实战-分析与安装)
+  - [1. kafka的主要特点分析](#1-kafka的主要特点分析)
+  - [2. kafka的架构模型分析](#2-kafka的架构模型分析)
+  - [3. kafka的内部设计特点](#3-kafka的内部设计特点)
+  - [4. kafka的应用场景分析](#4-kafka的应用场景分析)
+  - [5. kafka安装部署](#5-kafka安装部署)
+  - [6. kafka内部命令使用](#6-kafka内部命令使用)
+  - [7. kafka内部文件存储结构](#7-kafka内部文件存储结构)
+- [kafka消息队列应用实战-生产与消费](#kafka消息队列应用实战-生产与消费)
+  - [1. kafka生产者分析](#1-kafka生产者分析)
+  - [2. Kafka生产者的ACK机制（可靠性）](#2-Kafka生产者的ACK机制（可靠性）)
+  - [3. Kafka分布式保存数据一致性问题](#3-Kafka分布式保存数据一致性问题)
+  - [4. Kafka的Exactly Once实现](#4-Kafka的Exactly Once实现)
+  - [5. Kafka生产者的事务机制](#5-Kafka生产者的事务机制)
+  - [6. Kafka发送消息的流程](#6-Kafka发送消息的流程)
+  - [7. Kafka消费方式分析](#7-Kafka消费方式分析)
+  - [8. Kafka消费分区访问策略](#8-Kafka消费分区访问策略)
+  - [9. Springboot整合Kafka进行消息收发](#9-Springboot整合Kafka进行消息收发)
+  - [10. 搭建kafka的集群](#10-搭建kafka的集群)
+  - [11. Springboot整合Kafka进行消息收发](#11-Springboot整合Kafka进行消息收发)
+  - [12. kafka消费进度分析以及消费应答](#12-kafka消费进度分析以及消费应答)
+  - [13. 程序中指定分区和key的读写方式实现](#13-程序中指定分区和key的读写方式实现)
+  - [14. 在程序中consumer如何重新消费](#14-在程序中consumer如何重新消费)
+- [kafka监控及日志平台实战](#kafka监控及日志平台实战)
+  - [1. Kafka监控服务平台Eagle的使用](#1-Kafka监控服务平台Eagle的使用)
+  - [2. 大数据日志平台服务搭建设计](#2-大数据日志平台服务搭建设计)
+  - [3. 使用filebeat将日志收集进kafka](#3-使用filebeat将日志收集进kafka)
+  - [4. 通过logstash提取kafka数据进入ES](#4-通过logstash提取kafka数据进入ES)
 
 
-# kafka消息队列应用实战
+
+# kafka消息队列应用实战-分析与安装
 
 ## 1. kafka的主要特点分析
 
@@ -719,7 +752,9 @@ bin/ke.sh stats
 http://39.100.39.20:8048/ke
 ```
 
-## 1. 大数据日志平台服务搭建设计![image-20200309000712571](./assets/kafka/image-20200309000712571.png)
+## 2. 大数据日志平台服务搭建设计
+
+![image-20200309000712571](./assets/kafka/image-20200309000712571.png)
 
 ![image-20200309000819222](./assets/kafka/image-20200309000819222.png)
 

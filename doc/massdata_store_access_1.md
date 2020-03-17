@@ -1,4 +1,37 @@
-# 海量数据存储与访问瓶颈解决方案:数据切分-1
+
+
+[TOC]
+
+[目录](#)
+
+- [1. 数据切分方案分析](#1-数据切分方案分析)
+- [2. 垂直切分、水平切分方案分析](#2-垂直切分、水平切分方案分析)
+- [3. 整体分片方案的总结](#3-整体分片方案的总结)
+- [4. 再看读写分离](#4-再看读写分离)
+- [5. MyCat整体应用分析](#5-MyCat整体应用分析)
+- [6. MyCat安装使用](#6-MyCat安装使用)
+- [7. MyCat分片核心配置](#7-MyCat分片核心配置)
+- [8. MyCat读写分离多主库配置切换](#8-MyCat读写分离多主库配置切换)
+- [9. MyCat枚举分片规则](#9-MyCat枚举分片规则)
+- [10. MyCat取模分片规则](#10-MyCat取模分片规则)
+- [11. MyCat时间分片规则](#11-MyCat时间分片规则)
+- [12. MyCat全局表配置](#12-MyCat全局表配置)
+- [13. MyCat子表管理](#13-MyCat子表管理)
+- [14. MyCat安全机制应用](#14-MyCat安全机制应用)
+- [15. 通过zookeeper实现MyCat的HA配置](#15-通过zookeeper实现MyCat的HA配置)
+- [16. 通过zookeeper实现MyCat的HA配置同步](#16-通过zookeeper实现MyCat的HA配置同步)
+- [17. sharding-jdbc应用背景介绍](#17-sharding-jdbc应用背景介绍)
+- [18. sharding-jdbc和springboot集成应用](#18-sharding-jdbc和springboot集成应用)
+- [19. sharding-jdbc广播表配置使用](#19-sharding-jdbc广播表配置使用)
+- [20. sharding-jdbc绑定表配置使用](#20-sharding-jdbc绑定表配置使用)
+- [21. sharding-jdbc没有配置表但数据库有这个表](#21-sharding-jdbc没有配置表但数据库有这个表)
+- [22. sharding-jdbc实现读写分离](#22-sharding-jdbc实现读写分离)
+
+
+
+
+
+# 海量数据存3储与访问瓶颈解决方案:数据切分(分库分表)
 
 ## 1. 数据切分方案分析
 
@@ -248,7 +281,7 @@ vi server.xml
 
 再次启动就ok了
 
-## 7、MyCat分片核心配置
+## 7. MyCat分片核心配置
 
 ### 7.1. server.xml的核心配置
 
@@ -319,5 +352,591 @@ mycat针对系统线上运行有一个管理端口，专门做线上配置更新
 reload @@config;
 # 如果更新了数据源必须用config_all
 reload @@config_all;
+```
+
+
+
+## 8. MyCat读写分离多主库配置切换
+
+读写分离配置
+
+```xml
+        <dataHost name="HOST187" maxCon="1000" minCon="10" balance="1"
+                          writeType="0" dbType="mysql" dbDriver="native" switchType="1"  slaveThreshold="100">
+                <heartbeat>select user()</heartbeat>
+                <!-- can have multi write hosts -->
+                <writeHost host="M1" url="192.168.0.187:3306" user="gavin"
+                                   password="123456">
+                        <!-- can have multi read hosts -->
+                        <readHost host="S1" url="192.168.0.186:3306" user="gavin" password="123456" />
+                </writeHost>
+                <writeHost host="M2" url="192.168.0.189:3306" user="gavin"
+                                   password="123456" />
+        </dataHost>
+```
+
+## 9. MyCat枚举分片规则
+
+```shell
+# 分片规则在rule.xml
+# 修改schema里的分片规则
+<schema name="user_db" checkSQLschema="true" sqlMaxLimit="100">
+    <!-- auto sharding by id (long) -->
+    <table name="user_info" dataNode="dn1,dn2" rule="sharding-by-intfile" />
+</schema>
+# rule.xml设置分片的数据列
+        <tableRule name="sharding-by-intfile">
+              <rule>
+                    <columns>province_id</columns>
+                    <algorithm>hash-int</algorithm>
+              </rule>
+        </tableRule>
+        <function name="hash-int"
+                class="io.mycat.route.function.PartitionByFileMap">
+                <property name="mapFile">partition-hash-int.txt</property>
+                <property name="defaultNode">0</property>
+        </function>
+# 修改partition-hash-int.txt配置枚举
+10000=0
+10001=0
+10010=1
+10011=1
+如果枚举值不在范围内怎么办：
+在function加上<property name="defaultNode">0</property>
+# 0代表不在枚举范围内默认落到ds0节点,1代表不在枚举范围内默认落到ds1节点
+```
+
+## 10. MyCat取模分片规则
+
+```shell
+# 1.修改schema的table分片规则
+<schema name="user_db" checkSQLschema="true" sqlMaxLimit="100">
+    <!-- auto sharding by id (long) -->
+    <table name="user_info" dataNode="dn1,dn2" rule="mod-long" />
+</schema>
+# 2.修改rule里的分片列
+        <tableRule name="mod-long">
+                <rule>
+                        <columns>user_id</columns>
+                        <algorithm>mod-long</algorithm>
+                </rule>
+        </tableRule>
+# 3.修改取模节点数
+        <function name="mod-long" class="io.mycat.route.function.PartitionByMod">
+                <!-- how many data nodes -->
+                <property name="count">2</property>
+        </function>
+```
+
+## 11. MyCat时间分片规则
+
+```shell
+# schema里要添加表并设定时间分片规则
+<schema name="user_db" checkSQLschema="true" sqlMaxLimit="100">
+  <!-- auto sharding by id (long) -->
+  <table name="user_info" dataNode="dn1,dn2" rule="mod-long" />
+  <table name="login_info" dataNode="dn1,dn2" rule="my-sharding-by-date" />
+</schema>
+# rule.xml里自己设定的规则
+<tableRule name="my-sharding-by-date"> 
+	<rule>
+		<columns>login_date</columns>
+		<algorithm>sharding-by-date</algorithm>
+	</rule>
+</tableRule>
+
+<function name="sharding-by-date" class="io.mycat.route.function.PartitionByDate">
+	<property name="dateFormat">yyyy-MM-dd</property> 
+	<property name="sBeginDate">2020-03-14</property>
+	<property name="sEndDate">2020-03-15</property>
+	<property name="sPartionDay">1</property> 
+</function>
+# columns :标识将要分片的表字段
+# algorithm :分片函数
+# dateFormat :日期格式
+# sBeginDate :开始日期
+# sEndDate:结束日期
+# sPartionDay:分区天数，即默认从开始日期算起，分隔1天一个分区
+# 如果配置了 sEndDate 则代表数据达到了这个日期的分片后后循环从开始分片插入
+```
+
+## 12. MyCat全局表配置
+
+数据库里有很多表是做配置的，需要设置成全局表
+
+```xml
+# province_info 就是全局表
+<schema name="user_db" checkSQLschema="true" sqlMaxLimit="100">
+  <!-- auto sharding by id (long) -->
+  <table name="user_info" dataNode="dn1,dn2" rule="mod-long" />
+  <table name="login_info" dataNode="dn1,dn2" rule="my-sharding-by-date" />
+  <table name="province_info" dataNode="dn1,dn2" type="global" />
+</schema>
+```
+
+## 13. MyCat子表管理
+
+我们的订单信息：保存的订单的整体信息，比如收货人地址和订单金额
+
+订单详情又是另外一张表，如果order-A对应的order-itemA这两张表，不在一个节点上就会出现跨库
+
+子表管理：通过MyCat自身的配置将子表和父表绑定在一起，子表的分片规则跟着父表走
+
+```xml
+<schema name="user_db" checkSQLschema="true" sqlMaxLimit="100">
+  <!-- auto sharding by id (long) -->
+    <table name="user_info" dataNode="dn1,dn2" rule="mod-long" />
+    <table name="login_info" dataNode="dn1,dn2" rule="my-sharding-by-date" />
+    <table name="province_info" dataNode="dn1,dn2" type="global" />
+    <table name="order_info" dataNode="dn1,dn2" rule="auto-sharding-long">
+      	<childTable name="order_item" joinKey="order_id" parentKey="id"/>
+    </table>
+</schema>
+```
+
+## 14. MyCat安全机制应用
+
+**用户的登录权限**
+
+```shell
+# server.xml 进行用户访问设置的
+        <user name="user">
+                <property name="password">user</property>
+                <property name="schemas">user_db</property>
+                <property name="readOnly">true</property>
+                <property name="benchmark">2</property>
+        </user>
+# benchmark:当连接达到这里设置的值，就拒绝这个用户连接，0或者不设置就表示不限制
+```
+
+**schema中表的操作权限**
+
+```shell
+        <user name="root" defaultAccount="true">
+                <property name="password">123456</property>
+                <property name="schemas">user_db,product_db</property>
+
+                <privileges check="true">
+                        <schema name="user_db" dml="0110" >
+                                <table name="user_info" dml="0000"></table>
+                                <table name="order_info" dml="1111"></table>
+                        </schema>
+                </privileges>
+                <privileges check="true">
+                        <schema name="product_db" dml="0110" >
+                                <table name="product_info" dml="0000"></table>
+                                <table name="catelog_info" dml="1111"></table>
+                        </schema>
+                </privileges>
+        </user>
+# dml的四位数分别代表
+insert(0/1),update(0/1),select(0/1),delete(0/1)
+```
+
+**黑白名单设置**
+
+MyCat可以通过设置白名单建立防火墙
+
+```shell
+# MyCat白名单可以通过*来指定IP通配符,使用通配符后就不验证用户了
+<firewall>
+  <whitehost>
+    <host host="192.168.0.187" user="root"/>
+    <host host="192.168.0.187" user="user"/>
+    <host host="192.168.0.188" user="root"/>
+  </whitehost>
+</firewall>
+```
+
+MyCat通过黑名单设置数据表访问
+
+```shell
+<firewall>
+	<blacklist check="true">
+		<property name="deleteAllow">false</property>
+	</blacklist>
+</firewall>
+```
+
+黑白名单一起设置
+
+```shell
+<firewall>
+  <whitehost>
+    <host host="192.168.0.187" user="root"/>
+    <host host="192.168.0.187" user="user"/>
+    <host host="192.168.0.188" user="root"/>
+  </whitehost>
+  <blacklist check="true">
+		<property name="deleteAllow">false</property>
+	</blacklist>
+</firewall>
+```
+
+## 15. 通过zookeeper实现MyCat的HA配置
+
+MyCat就是一个数据库的中间代理层
+
+MyCat能够实现多个writeHost热切换，只要你配置了双主的MySQL结构，就能实现两个写入节点的热切换
+
+多个MyCat机器
+
+如果是内网：keepalived(VIP)+HAProxy(x2)+MyCat*2(mysql -uroot -p都是通过TCP连接)
+
+如果是阿里云：SLB（阿里云的负载均衡器）+MyCat*2
+
+MyCat-A，MyCat-B（同时连接了dataHost1，dataHost2）
+
+如果有多个MyCat镜像节点，那么配置就显得比较繁琐，同步过程比较麻烦，需要手工同步并进行reload
+
+这个时候如果有个一个统一的配置中心可以只修改一个地方，就可以同步所有节点
+
+这个时候就可以使用zookeeper，可以针对zookeeper开发一个MyCat的中心配置功能
+
+zookeeper就是用来进行多台MyCat的配置同步的
+
+## 16. 通过zookeeper实现MyCat的HA配置同步
+
+通过MyCat的HA，多个MyCat实现高可用，我们的多台服务的配置就需要同步
+
+配置同步就需要借助zookeeper，将mycat的配置文件同步到zookeeper上
+
+```shell
+# 0.安装好zookeeper
+# 1.在mycat/conf目录下修改myid.properties
+loadZk=true
+zkURL=127.0.0.1:2181  # 如果是集群就以csv格式
+clusterId=mycat-cluster-1
+myid=mycat_fz_01
+clusterSize=2
+clusterNodes=mycat_fz_01,mycat_fz_02
+#server  booster  ;   booster install on db same server,will reset all minCon to 2
+type=server
+boosterDataHosts=dataHost1
+
+# 2.mycat在执行zookeeper配置上传时是在conf/zkconf下找配置上传到zookeeper
+# 将server.xml,schema.xml,rule.xml,autopartition-long.txt复制进zkconf
+
+# 3.将zkconf里的配置通过mycat提供的脚本上传到myid.properties指定的zookeeper地址中
+mycat/bin/init_zk_data.sh
+# -bash: ./init_zk_data.sh: /bin/bash^M: bad interpreter: No such file or directory
+sed -i 's/\r$//' init_zk_data.sh # 将windows文件的回车和换行更换为linux
+# 执行后看到done就说明上传成功
+# 通过ZooInspector去看zookeeper的节点信息
+ZooInspector下载路径
+wget https://issues.apache.org/jira/secure/attachment/12436620/ZooInspector.zip
+在build目录下执行
+java -jar zookeeper-dev-ZooInspector.jar
+启动后配置zookeeper的ip:port即可127.0.0.1:2181
+
+# 4.Mycat启动cluster在zookeeper上同步配置需要至少3台机器，启动另两个节点
+# 另外两个节点的配置只需要配置myid.properties
+# 启动这两个节点将配置从zookeeper上拉下来后需要再重启一下加载配置以便正常访问
+
+# 5.配置的过程
+1.mycat各个节点会向zookeeper订阅节点的变化
+2.如果节点变化了，就将变化的内容load下来更新conf中相关的配置
+3.并对服务进行reload
+```
+
+![image-20200316002035303](./assets/massdata/image-20200316002035303.png)
+
+如果我们自己使用zookeeper来进行配置的集中管理，如何设计
+
+1.通过业务代码将需要管理的配置更改成json格式上传zookeeper
+
+2.各个业务节点watch我们的zookeeper的znode，当znode发生变化我们的业务节点就会接收到变更通知
+
+3.接收到变更后就可以触发业务了
+
+## 17. sharding-jdbc应用背景介绍
+
+- sharding-jdbc是一个分布式的关系数据库中间件
+
+- sharding-jdbc已经进入apche孵化器http://shardingsphere.apache.org/
+
+- 客户端代理模式，不需要搭建服务，只需要后端数据库搭建好就ok了
+
+- 在应用程序端进行sharding-jdbc的设置就行
+
+- 定位于一个轻量级java框架，以jar包提供服务的
+
+- 可以理解为增强版的jdbc驱动
+
+- 完全兼容主流的ORM框架
+
+  ![image-20200315205933469](./assets/massdata/image-20200315205933469.png)
+
+- sharding-jdbc提供4种配置
+
+  - Java API
+  - yaml
+  - springboot的properties
+  - spring的命名空间
+
+- 与MyCat的区别
+
+  - MyCat是服务端的代理，模拟了一个逻辑数据库
+  - Sharding-jdbc是客户端的代理，整合jdbc成为了一个更强大的数据驱动
+  - 实际开发中如何选择：如果公司有DBA或数据库运维人员，就使用MyCat，如果只有开发建议使用sharding-jdbc在程序端维护
+  - MyCat不支持在一个库内进行水平切分，sharding-jdb支持在一个库内进行数据切分
+
+- 名词解释
+
+  - 逻辑表：相当于多个物理表的合并表
+  - 真实表：实际存放数据的分片表
+  - 数据节点：存储数据的MySQL节点
+  - 绑定表：相当于MyCat的子表的概念
+  - 广播表：相当于MyCat的全局表
+
+## 18. sharding-jdbc和springboot集成应用
+
+搭建数据结构
+
+```sql
+CREATE TABLE `order_info_1` (
+  `id` int(11) NOT NULL,
+  `order_amount` decimal(10,2) NOT NULL,
+  `order_status` int(1) NOT NULL,
+  `user_id` int(11) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+先导入POM依赖
+
+```xml
+<dependency>
+  <groupId>org.apache.shardingsphere</groupId>
+  <artifactId>sharding-jdbc-spring-boot-starter</artifactId>
+  <version>4.0.0-RC2</version>
+</dependency>
+```
+
+通通过application.properties配置数据源和分片规则
+
+```properties
+# 定义两个数据节点
+spring.shardingsphere.datasource.names=ds0,ds1
+# 对数据节点进行驱动设置
+spring.shardingsphere.datasource.ds0.type=com.zaxxer.hikari.HikariDataSource
+spring.shardingsphere.datasource.ds0.driver-class-name=com.mysql.jdbc.Driver
+spring.shardingsphere.datasource.ds0.url=jdbc:mysql://39.99.182.22:3306/shard_order
+spring.shardingsphere.datasource.ds0.username=gavin
+spring.shardingsphere.datasource.ds0.password=123456
+
+spring.shardingsphere.datasource.ds1.type=com.zaxxer.hikari.HikariDataSource
+spring.shardingsphere.datasource.ds1.driver-class-name=com.mysql.jdbc.Driver
+spring.shardingsphere.datasource.ds1.url=jdbc:mysql://39.100.33.54:3306/shard_order
+spring.shardingsphere.datasource.ds1.username=gavin
+spring.shardingsphere.datasource.ds1.password=123456
+# 配置分库分表的规则，这里使用表达式进行数据切分
+spring.shardingsphere.sharding.tables.order_info.actual-data-nodes=ds$->{0..1}.order_info_$->{1..2}
+spring.shardingsphere.sharding.tables.order_info.database-strategy.inline.sharding-column=user_id
+spring.shardingsphere.sharding.tables.order_info.database-strategy.inline.algorithm-expression=ds$->{user_id % 2}
+spring.shardingsphere.sharding.tables.order_info.table-strategy.inline.sharding-column=id
+spring.shardingsphere.sharding.tables.order_info.table-strategy.inline.algorithm-expression=order_info_$->{id % 2 + 1}
+```
+
+测试代码
+
+```java
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
+
+@SpringBootTest
+class ShardingjdbcProjectApplicationTests {
+
+    @Autowired
+    JdbcTemplate jdbcTemplate;
+
+    @Test
+    void contextLoads() {
+        String sql = "insert into order_info(id,order_amount,order_status,user_id) values(2,188.66,1,2)";
+        int i = jdbcTemplate.update(sql);
+        System.out.println("*************执行完成，影响行数:"+i);
+
+    }
+
+}
+//'shardingDataSource' threw exception; nested exception is java.lang.IllegalArgumentException: jdbcUrl is required with driverClassName.
+```
+
+这个错误修改
+
+```properties
+# 将这个配置
+spring.shardingsphere.datasource.ds0.url=jdbc:mysql://39.99.182.22:3306/shard_order
+# 改成下面的
+spring.shardingsphere.datasource.ds0.jdbcUrl=jdbc:mysql://39.99.182.22:3306/shard_order
+```
+
+查询数据
+
+```java
+    @Test
+    void queryTest(){
+        String query = "select * from order_info";
+        List<Map<String,Object>> result = jdbcTemplate.queryForList(query);
+        for (Map<String,Object> val: result) {
+            System.out.println("========="+val.get("id")+"---"+val.get("order_amount")+"---"+val.get("user_id"));
+
+        }
+    }
+```
+
+## 19. sharding-jdbc广播表配置使用
+
+相当于是MyCat中的全局表，主要是应用于配置数据的表
+
+先在两个数据库上创建广播表province_info
+
+```sql
+CREATE TABLE `province_info` (
+  `id` int(11) NOT NULL,
+  `name` varchar(255) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+在properties上增加配置
+
+```shell
+# 设置广播表，表名和数据库里的一致
+spring.shardingsphere.sharding.broadcast-tables=province_info
+```
+
+测试代码
+
+```java
+    @Test
+    void broadcastInsert(){
+        String sql = "insert into province_info(id,name) values(1,'beijing')";
+        int i = jdbcTemplate.update(sql);
+        System.out.println("*************执行完成，影响行数:"+i);
+    }
+
+    @Test
+    void queryBroadcast(){
+        String query = "select * from province_info";
+        List<Map<String,Object>> result = jdbcTemplate.queryForList(query);
+        for (Map<String,Object> val: result) {
+            System.out.println("========="+val.get("id")+"---"+val.get("name"));
+
+        }
+    }
+```
+
+## 20. sharding-jdbc绑定表配置使用
+
+一个order_info的主表还需要关联order_item的子表，先在两个库上分别创建两个order_item的表
+
+```sql
+CREATE TABLE `order_item_1` (
+  `id` int(11) NOT NULL,
+  `product_name` varchar(255) NOT NULL,
+  `user_id` int(11) NOT NULL,
+  `order_id` int(11) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+配置properties增加order_item的配置
+
+```properties
+# 增加子表的分片规则，要让子表和父表在一个库一个表序列中，就需要增加父表的分库分表字段并按照父表的分库分表规则进行切分
+spring.shardingsphere.sharding.tables.order_item.actual-data-nodes=ds$->{0..1}.order_item_$->{1..2}
+spring.shardingsphere.sharding.tables.order_item.database-strategy.inline.sharding-column=user_id
+spring.shardingsphere.sharding.tables.order_item.database-strategy.inline.algorithm-expression=ds$->{user_id % 2}
+spring.shardingsphere.sharding.tables.order_item.table-strategy.inline.sharding-column=order_id
+spring.shardingsphere.sharding.tables.order_item.table-strategy.inline.algorithm-expression=order_item_$->{order_id % 2 + 1}
+
+# 绑定关系说明，让sharding-jdbc知道这两个是绑定表，加速关联查询
+spring.shardingsphere.sharding.binding-tables=order_info,order_item
+```
+
+插入数据测试
+
+```java
+    @Test
+    void orderItemInsert() {
+        String sql = "insert into order_item(id,product_name,user_id,order_id) values(1,'java',2,2)";
+        int i = jdbcTemplate.update(sql);
+        System.out.println("*************执行完成，影响行数:"+i);
+
+    }
+```
+
+## 21. sharding-jdbc没有配置表但数据库有这个表
+
+```java
+    @Test
+    void queryGb(){
+        String query = "select * from gb1";
+        List<Map<String,Object>> result = jdbcTemplate.queryForList(query);
+        for (Map<String,Object> val: result) {
+            System.out.println("========="+val.get("id")+"---"+val.get("name"));
+
+        }
+    }
+//gb1在两个数据库中都有同名表，但配置里没有进行配置，就会报错
+java.lang.IllegalStateException: Missing the data source name: 'null'
+```
+
+分库分表是在你已经对数据库进行垂直拆分后才进行优化
+
+你的业务模块已经服务化了，或者已经独立配置了，再对你的数据库单表进行分片规则应用
+
+## 22. sharding-jdbc实现读写分离
+
+主要是properties的配置
+
+```properties
+# 声明主机从机的标识
+spring.shardingsphere.datasource.names=master0,master1,master0slave0,master1slave0
+# 配置主机数据源
+spring.shardingsphere.datasource.master0.type=com.zaxxer.hikari.HikariDataSource
+spring.shardingsphere.datasource.master0.driver-class-name=com.mysql.jdbc.Driver
+spring.shardingsphere.datasource.master0.jdbcUrl=jdbc:mysql://39.99.182.22:3306/shard_order
+spring.shardingsphere.datasource.master0.username=gavin
+spring.shardingsphere.datasource.master0.password=123456
+# 配置从机数据源
+spring.shardingsphere.datasource.master0slave0.type=com.zaxxer.hikari.HikariDataSource
+spring.shardingsphere.datasource.master0slave0.driver-class-name=com.mysql.jdbc.Driver
+spring.shardingsphere.datasource.master0slave0.jdbcUrl=jdbc:mysql://39.100.34.208:3306/shard_order
+spring.shardingsphere.datasource.master0slave0.username=gavin
+spring.shardingsphere.datasource.master0slave0.password=123456
+# 配置主机数据源
+spring.shardingsphere.datasource.master1.type=com.zaxxer.hikari.HikariDataSource
+spring.shardingsphere.datasource.master1.driver-class-name=com.mysql.jdbc.Driver
+spring.shardingsphere.datasource.master1.jdbcUrl=jdbc:mysql://39.100.33.54:3306/shard_order
+spring.shardingsphere.datasource.master1.username=gavin
+spring.shardingsphere.datasource.master1.password=123456
+# 配置从机数据源
+spring.shardingsphere.datasource.master1slave0.type=com.zaxxer.hikari.HikariDataSource
+spring.shardingsphere.datasource.master1slave0.driver-class-name=com.mysql.jdbc.Driver
+spring.shardingsphere.datasource.master1slave0.jdbcUrl=jdbc:mysql://47.92.3.35:3306/shard_order
+spring.shardingsphere.datasource.master1slave0.username=gavin
+spring.shardingsphere.datasource.master1slave0.password=123456
+# 配置表分片规则，还是使用ds0,ds1来进行切分,ds是数据节点
+spring.shardingsphere.sharding.tables.order_info.actual-data-nodes=ds$->{0..1}.order_info_$->{1..2}
+spring.shardingsphere.sharding.tables.order_info.database-strategy.inline.sharding-column=user_id
+spring.shardingsphere.sharding.tables.order_info.database-strategy.inline.algorithm-expression=ds$->{user_id % 2}
+spring.shardingsphere.sharding.tables.order_info.table-strategy.inline.sharding-column=id
+spring.shardingsphere.sharding.tables.order_info.table-strategy.inline.algorithm-expression=order_info_$->{id % 2 + 1}
+
+# ds0对应的主从数据源管理
+spring.shardingsphere.sharding.master-slave-rules.ds0.master-data-source-name=master0
+spring.shardingsphere.sharding.master-slave-rules.ds0.slave-data-source-names=master0slave0
+# 多个slave的负载方式：轮询方式
+# spring.shardingsphere.sharding.master-slave-rules.ds0.load-balance-algorithm-type=round_robin
+
+# ds1对应的主从数据源管理
+spring.shardingsphere.sharding.master-slave-rules.ds1.master-data-source-name=master1
+spring.shardingsphere.sharding.master-slave-rules.ds1.slave-data-source-names=master1slave0
+# 多个slave的负载方式：随机方式
+# spring.shardingsphere.sharding.master-slave-rules.ds1.load-balance-algorithm-type=random
 ```
 
