@@ -1,4 +1,5 @@
 ## 工作学习笔记目录
+  - [MySQL介绍与环境搭建](./doc/mysql.md)
   - [海量数据存储&访问-数据切分(分库分表)](./doc/massdata_store_access_1.md)
   - [分布式搜索引擎ElasticSearch](./doc/Elasticsearch.md)
   - [消息队列介绍与分析](./doc/MQ.md)
