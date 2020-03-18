@@ -13,6 +13,17 @@
   - [5.1. MySQL索引优化](#5.1-MySQL索引优化)
   - [5.2.  数据库设计规范](#5.2-数据库设计规范)
 - [6、分区表应用](#6分区表应用)
+  - [6.1. 什么是分区表](#6.1-什么是分区表)
+  - [6.2. 为什么使用分区表](#6.2-为什么使用分区表)
+  - [6.3. 分区表类型及使用](#6.3-分区表类型及使用)
+  - [6.4. 应用场景](#6.4-应用场景)
+- [7、MySQL 高可用HA实现](#7MySQL 高可用HA实现)
+  - [7.1. 什么是数据库高可用](#7.1-什么是数据库高可用)
+    - [7.2.1. 配置主从服务（binlog⽇志点position 方式）](#7.2.1-配置主从服务（binlog⽇志点position 方式）)
+    - [7.2.2. 配置主从服务（ GTID的⽅式）](#7.2.2-配置主从服务（ GTID的⽅式）)
+    - [7.2.3. 数据主从复制⽅式的容灾处理](#7.2.3-数据主从复制⽅式的容灾处理)
+  - [7.2. MySQL数据库的高可用实现-主从](#7.2-MySQL数据库的高可用实现-主从)
+  - [7.3. MySQL 高可用集群双主复制模式(基于GTID)](#7.3-MySQL 高可用集群双主复制模式(基于GTID))
 
 
 
@@ -833,16 +844,166 @@ type
 
 ## 6、分区表应用 ##
 
-#### innodb表存放形式(正常) ####
+
+
+### 6.1. 什么是分区表 ###
+
+正常的表存放方式
 
 ```shell
 customer_login_log.frm #保存了每个表的元数据，包括表结构以及相应的定义，⽆论是什么数据引擎都有这个⽂件
 customer_login_log.ibd #innodb的存放数据⽂件和索引的地⽅
+
+customer_login_log.MYD # myisam表
+customer_login_log.MYI # myisam表
+```
+
+分区表：customer_login_log.ibd 这个文件会有多个
+
+- 在MySQL v5.1版本后就开始⽀持分区表功能
+
+  ```sql
+  show variables like '%partition%';
+  ```
+
+- MySQL v5.6（含）版本后使⽤这个命令，看系统是否⽀持分区
+
+  ```sql
+  show plugins;
+  ```
+
+### 6.2. 为什么使用分区表
+
+- 经常遇到上千万甚⾄上亿的记录表数据 
+- 查询困难，⽽且历史数据其实是不太关⼼的
+- 要进⾏归档了？如何归档？
+  - ⼀年前的数据通过where < 20190101 00:00:00 查出来insert进arch，bak
+  - mysqldump 是可以加where条件
+  - 原表的历史数据要删除？delete table where time? 删除不要的 
+    - 我们3年的数据，只留近半年的：零晨4点你delete 
+      - innodb数据是由b+树组织的，如果delete where只会标记改数据被删除，不会真 正删除，将来插⼊数据的时候空间可复⽤，磁盘⽂件⼤⼩不会缩⼩ 
+      - mysql > OPTIMIZE table my_table_name; 
+    - 把要的数据导出，创建新表，不要的数据备份，旧表drop
+- 如果我们有这样⼀种⽂件组织形式：2017年的数据放⼀个⽂件，2018年的数据放⼀个⽂件， 2019，这个时候就可以按照⽂件进⾏删除了，并且可以指定数据⽂件查询范围，就会提升查询效 率
+
+### 6.3. 分区表类型及使用
+
+**分区表类型**
+
+- HASH分区 
+- LIST分区 
+- RANGE分区 
+- KEY分区
+
+**HASH分区** 
+
+- 根据MOD(分区键)的值把数据存储到表的不同分区中 
+
+- 基本可以平均分布于各个分区 
+
+- HASH分区的键值必须是INT类型，可以通过函数转为INT类型
+
+  ```mysql
+  CREATE TABLE `customer_login_log` (
+   `customer_id` int(10) unsigned NOT NULL COMMENT '登录⽤户ID',
+   `login_time` datetime NOT NULL COMMENT '⽤户登录时间',
+   `login_ip` int(10) unsigned NOT NULL COMMENT '登录IP',
+   `login_type` tinyint(4) NOT NULL COMMENT '登录类型:0未成功 1成功'
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8
+  PARTITION BY HASH(customer_id) PARTITIONS 4;
+  ```
+
+  使用函数进行INT输出
+
+  ```mysql
+  CREATE TABLE `customer_login_log` (
+   `customer_id` int(10) unsigned NOT NULL COMMENT '登录⽤户ID',
+   `login_time` timestamp NOT NULL COMMENT '⽤户登录时间', #注意这⾥的数据类型
+   `login_ip` int(10) unsigned NOT NULL COMMENT '登录IP',
+   `login_type` tinyint(4) NOT NULL COMMENT '登录类型:0未成功 1成功'
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8
+  PARTITION BY HASH(UNIX_TIMESTAMP(login_time)) PARTITIONS 4;
+  ```
+
+**LIST分区**
+
+- 按照分区键取值的列表进⾏分区 
+
+- 各分区的列表值不能重复 
+
+- 每⼀⾏数据必须能找到对应的分区列表，否则插⼊失败
+
+  ```mysql
+  CREATE TABLE `customer_login_log` (
+   `customer_id` int(10) unsigned NOT NULL COMMENT '登录⽤户ID',
+   `login_time` datetime NOT NULL COMMENT '⽤户登录时间',
+   `login_ip` int(10) unsigned NOT NULL COMMENT '登录IP',
+   `login_type` tinyint(4) NOT NULL COMMENT '登录类型:0未成功 1成功'
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8
+  PARTITION BY LIST(login_type)(
+   PARTITION p0 VALUES in (1,3,5,7,9),
+   PARTITION p1 VALUES in (2,4,6,8)
+  );
+  ```
+
+**RANG范围分区**
+
+- 根据分区键值保存到不同表中 
+
+- 多个分区要连续，不能重叠 
+
+- 要完全封⼝则需要使⽤MAXVALUE
+
+  ```mysql
+  CREATE TABLE `customer_login_log` (
+   `customer_id` int(10) unsigned NOT NULL COMMENT '登录⽤户ID',
+   `login_time` datetime NOT NULL COMMENT '⽤户登录时间',
+   `login_ip` int(10) unsigned NOT NULL COMMENT '登录IP',
+   `login_type` tinyint(4) NOT NULL COMMENT '登录类型:0未成功 1成功'
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8
+  PARTITION BY RANGE(YEAR(login_time))(
+   PARTITION p0 VALUES LESS THAN (2017),
+   PARTITION p1 VALUES LESS THAN (2018),
+   PARTITION p2 VALUES LESS THAN (2019),
+   PARTITION p3 VALUES LESS THAN (2020),
+   PARTITION p4 VALUES LESS THAN MAXVALUE
+  );
+  ```
+
+  
+
+**转换函数**
+
+```mysql
+ABS()
+CEILING() (see CEILING() and FLOOR())
+DAY()
+DAYOFMONTH()
+DAYOFWEEK()
+DAYOFYEAR()
+DATEDIFF()
+EXTRACT() (see EXTRACT() function with WEEK specifier)
+FLOOR() (seeCEILING() and FLOOR())
+HOUR()
+MICROSECOND()
+MINUTE()
+MOD()
+MONTH()
+QUARTER()
+SECOND()
+TIME_TO_SEC()
+TO_DAYS()
+TO_SECONDS()
+UNIX_TIMESTAMP() (permitted beginning with MySQL 5.6.1 and fully supported
+beginning with MySQL 5.6.3, with TIMESTAMP columns)
+WEEKDAY()
+YEAR()
+YEARWEEK()
 ```
 
 
 
-#### 分区表命令 ####
+#### 6.3.1 分区表操作命令 ####
 
 ```mysql
 #查看是否支持分区
@@ -860,34 +1021,7 @@ mysql> select * from customer_login_log partition(p1);
 mysql> select * from customer_login_log partition(p1) where login_type=5;
 
 
-#==========================================================================
-#创建分区表
-CREATE TABLE `customer_login_log` (
- `customer_id` int(10) unsigned NOT NULL COMMENT '登录⽤户ID',
- `login_time` datetime NOT NULL COMMENT '⽤户登录时间',
- `login_ip` int(10) unsigned NOT NULL COMMENT '登录IP',
- `login_type` tinyint(4) NOT NULL COMMENT '登录类型:0未成功 1成功'
-) ENGINE=InnoDB DEFAULT CHARSET=utf8
-[
-    PARTITION BY HASH(customer_id) PARTITIONS 4; 1234567		#hash方式(int类型)
-    |
-    PARTITION BY HASH(UNIX_TIMESTAMP(login_time)) PARTITIONS 4;	#hash时间转int类型
-    |
-    PARTITION BY LIST(login_type)(								#LIST分区
-     	PARTITION p0 VALUES in (1,3,5,7,9),
-     	PARTITION p1 VALUES in (2,4,6,8)
-    )
-    |
-    PARTITION BY RANGE(YEAR(login_time))(						#RANGE 分区 常用形式
-         PARTITION p0 VALUES LESS THAN (2017),
-         PARTITION p1 VALUES LESS THAN (2018),
-         PARTITION p2 VALUES LESS THAN (2019),
-         PARTITION p3 VALUES LESS THAN (2020),
-         PARTITION p4 VALUES LESS THAN MAXVALUE			#完全封口，如果自行添加分区，则这行不需要
-    )
-    
-];
-
+#=========================================================================
 #添加分区
 ALTER TABLE customer_login_log ADD PARTITION(PARTITION p4 VALUES LESS THAN(2021))
 
@@ -902,59 +1036,179 @@ ALTER TABLE customer_login_log PARTITION BY RANGE(YEAR(login_time))(
 # >数据量大，创建分区表(和此表结构相同) -> 同步数据 -> 切换表
 ```
 
-#### 分区交换-归档表 ####
+### 6.4. 应用场景
 
-- 表结构要相同
+**RANGE 分区-归档**
 
-- 归档的这个表不能是分区表
+⽇志数据进⾏备份的时候 
 
-- 归档表不能有外键约束
+在MySQL v5.7版本后加⼊了⼀个分区交换的概念 
+
+- 表结构要相同 
+
+- 归档的这个表不能是分区表 
+
+- 归档表不能有外键约束 
 
 - ARCHIVE
 
+  ```mysql
+  #归档表
+  CREATE TABLE `arch_customer_login_log_2016` (
+   `customer_id` int(10) unsigned NOT NULL COMMENT '登录⽤户ID',
+   `login_time` datetime NOT NULL COMMENT '⽤户登录时间',
+   `login_ip` int(10) unsigned NOT NULL COMMENT '登录IP',
+   `login_type` tinyint(4) NOT NULL COMMENT '登录类型:0未成功 1成功'
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+  ```
+
+  ```mysql
+  #交换
+  ALTER TABLE customer_login_log exchange PARTITION p0 WITH TABLE arch_customer_login_log_2016;
+  #设置归档表引擎
+  ALTER TABLE arch_customer_login_log_2016 ENGINE=ARCHIVE;
+  ```
+
+  删除分区文件
+
+  ```mysql
+  #删除分区文件
+  ALTER TABLE customer_login_log DROP PARTITION p0;
+  ```
+
+​	
+
+**问题1**
+
+如果一个表不是分区表并已经有数据了，还能不能变成分区表
+
+可以
+
 ```mysql
-#归档表
-CREATE TABLE `arch_customer_login_log_2016` (
- `customer_id` int(10) unsigned NOT NULL COMMENT '登录⽤户ID',
- `login_time` datetime NOT NULL COMMENT '⽤户登录时间',
- `login_ip` int(10) unsigned NOT NULL COMMENT '登录IP',
- `login_type` tinyint(4) NOT NULL COMMENT '登录类型:0未成功 1成功'
-) ENGINE=InnoDB DEFAULT CHARSET=utf8;
-
-#交换
-ALTER TABLE customer_login_log exchange PARTITION p0 WITH TABLE arch_customer_login_log_2016;
-#设置归档表引擎
-ALTER TABLE arch_customer_login_log_2016 ENGINE=ARCHIVE;
-
-#删除分区文件
-ALTER TABLE customer_login_log DROP PARTITION p0;
+ALTER TABLE customer_login_log PARTITION BY RANGE(YEAR(login_time))(
+ PARTITION p0 VALUES LESS THAN (2017),
+ PARTITION p1 VALUES LESS THAN (2018),
+ PARTITION p2 VALUES LESS THAN (2019),
+ PARTITION p3 VALUES LESS THAN (2020)
+);
 ```
 
+变成分区表后，数据是否按照分区重新排列？
+
+会重排数据，但数据量⼤的情况下I/O消耗很⼤ 
+
+这种数据量⼤的表，要按照修改表结构的⽅式来进⾏分区表操作 
+
+- 建⽴新结构相同的分区表 
+- 数据导⼊ 
+- 表名切换
+
+**问题2**
+
+既然把表分开了，那我们分区表最⼤有多少个：1024
+
+分区表的限制和注意事项：
+
+- 如果表⾥有主键必须包含分区表的分区键 
+- 很多时候，使⽤分区表就不要使⽤主键，建⽴主键后可能会影响性能 
+- 不要建⽴过多的分区 
+- 分区表不⽀持外键 
+- 分区规则必须要提前设⽴好，否则修改很麻烦
+
+**⽇志表的特质** 
+
+- 记录⾮常的多，⾮常的⼤ 
+- 明显的时间区间特征 
+- 查询频次低，就近时间点查询频次⾼ 
+- 需要定期归档转储
+
+在这样的表结构下分区表就是我们的最佳实践
 
 
-## 6、MySQL 高可用HA实现-主从(基于日志点) ##
 
-### Binlog的日志点方式配置主从 ###
+## 7、MySQL 高可用HA实现 ##
 
-#### 1. 主服务器Master ####
+1. 数据库⾼可⽤分析 
+   - ⾼可⽤的衡量标准 
+   - 数据库实现⾼可⽤的⼏种⽅式 
+   - MySQL数据库实现⾼可⽤ 
+2. MySQL主从复制的容灾处理 
+   - MySQL⽀持的复制⽅式分析 
+   - 主从场景切换⽅式 
+   - 主从结构如何实现容灾
+
+### 7.1. 什么是数据库高可用
+
+#### 7.1.1. 什么是高可用集群
+
+N+1: N就是集群，1 就是高可用，高可用的核心就是冗余，集群是保证服务最低使用的标准
+
+#### 7.1.2. 高可用集群的衡量标准
+
+⼀般是通过系统的可靠性和可维护性来衡量的 
+
+MTTF：平均⽆故障时间，这是衡量可靠性的 
+
+MTTR：衡量系统的可维护性的 HA=MTTF/(MTTF+MTTR)*100% 
+
+SLA：99.999%：表示⼀年故障时间/宕机时间不超过6分钟
+
+#### 7.1.3. 实现高可用的三种方式
+
+- 主从方式（非对称）
+
+  这种⽅式的组织形式通常都是通过两个节点和⼀个或多个服务器，其中⼀台作为主节点 (active)，另⼀台作为备份节点（standy），备份节点应该随时都在检测主节点的健康状况，当 主节点发⽣故障，服务会⾃动切换到备份节点保障服务正常运⾏
+
+- 对称方式
+
+  两个节点，都运⾏着不同的服务且相互备份，相互检测对⽅的健康，当任意⼀个节点发⽣故障，这 个节点上的服务就会⾃动切换到另⼀节点
+
+- 多机方式
+
+  包含多个节点多个服务，每个节点都要备份运⾏不同的服务，出现问题⾃动迁移
+
+### 7.2. MySQL数据库的高可用实现-主从
+
+- 资源： 两台同版本(避免出现一些奇怪的问题)的MySQL数据库
+- 主从实现的内部运行原理和机制
+  - First Step：主数据库服务器会把数据的修改记录记录进binlog⽇志，binlog⼀定要打开
+  - Second Step：从库的I/O进⾏读取主库的binlog内容后存⼊⾃⼰的Relay Log中继⽇志中，这 个I/O线程会和主库建⽴⼀个普通的客户端连接，然后主库启动⼀个⼆进制转储线程，I/O线 程通过转储线程读取binlog更新事件，同步完毕后I/O进⼊sleep，有新的更新会再唤醒 
+    - Relay Log和Binlog的格式是⼀样的，可以⽤mysqlbinlog读取，也可show 
+    - mysql> show relaylog events in 'relay-log.000001'; 
+    - ⽬前数据库有两种复制⽅式 
+      - binlog⽇志点position 
+      - GTID⽅式也要依赖binlog 
+  - Third Step：从服务器的SQL进程会从Relay Log中读取事件并在从库中重放 从服务器执⾏重放操作时是可以在配置⾥声明是否写⼊服务器的binlog⽇志中
+
+![image-20200318103510623](./assets/mysql/image-20200318103510623.png)
+
+#### 7.2.1. 配置主从服务（binlog⽇志点position 方式）
+
+ **Binlog的⽇志点⽅式配置主从同步**
+
+- 配置主从服务器参数 
+- 在Master服务器上创建⽤于复制并授权的数据库账号 
+- 备份Master数据库并初始化Slave服务器数据 
+- 启动复制链路
+
+**Master服务配置**
 
 ```shell
-# 配置文件
-
+chown -R mysql:mysql /usr/local/binlog/
+#配置⽂件
 server_id=163
 log_bin=/usr/local/binlog/mysql-bin
 ```
 
-#### 2. 从服务器Slave ####
+**Slave服务配置**
 
 ```shell
-#配置文件
-
 server_id=196
 log_bin=/usr/local/binlog/mysql-bin
 relay_log=/usr/local/relaylog/relay-bin
 #当slave宕机后，如果relay log损坏了，导致⼀部分中继⽇志没有处理，则放弃所有未完成的，重新获取执⾏，保证完整性
-relay_log_recovery=1 #让从库数据只读，super⽤户，super_read_only=on
+relay_log_recovery=1
+#让从库数据只读，super⽤户，super_read_only=on
 read_only=on
 #从库的复制链路服务不会随数据库重启⽽重启，需要⼿动启动
 skip_slave_start=on
@@ -965,102 +1219,139 @@ relay_log_info_repository=TABLE
 #select * from mysql.slave_relay_log_info;
 ```
 
-#### 3. 主库授权 ####
+**主库授权**
 
 ```mysql
-mysql> use msyql;
+use msyql;
 # 授权并创建用户
-mysql> grant replication slave on *.* to 'syncuser'@'117.48.201.34' identified by '123456';
+grant replication slave on *.* to 'syncuser'@'117.48.201.34' identified by '123456';
 #> grant replication slave on *.* to 'syncuser'@'120.24.251.165' identified by '123456';
-mysql> flush privileges;
+flush privileges;
 #@IP 从库ip
 
 #(v5.7以后密码策略严格) 需要修改
-mysql> set global validate_password_policy=LOW;
-mysql> set global validate_password_length=6;
+set global validate_password_policy=LOW;
+set global validate_password_length=6;
 
 #扩展 删除用户及权限
-mysql> drop user '用户名'@'%';
-mysql> drop user '用户名'@'localhost';
+drop user '用户名'@'%';
+drop user '用户名'@'localhost';
 ```
 
-#### 4. 初始化数据 ####
+**初始化数据**
 
 ```shell
-# 主库dump数据
-mysqldump -uroot -p123456 --master-data=2 --single-transaction --routines --triggers --events --databases mydb > mydb.sql
-
-#文件中有 position 需要注意
-# 从库写入数据
-mysql> source mydb.sql
+mysqldump -uroot -p123456 --master-data=2 --single-transaction --routines -
+-triggers --events --databases mydb > mydb.sql
 ```
 
-#### 5. 创建复制链路 ####
+**创建复制链路**
 
 ```mysql
-mysql> CHANGE MASTER TO 
-	MASTER_HOST='120.24.251.165',
-	MASTER_PORT=3306,
-	MASTER_USER='syncuser',
-	MASTER_PASSWORD='123456',
-	MASTER_LOG_FILE='mysql-bin.000002',
-	MASTER_LOG_POS=1306; 
+CHANGE MASTER TO
+MASTER_HOST='192.168.0.102',
+MASTER_PORT=3306,
+MASTER_USER='syncuser',
+MASTER_PASSWORD='123456',
+MASTER_LOG_FILE='mysql-bin.000001',
+MASTER_LOG_POS=8122;
+
 # MASTER_LOG_POS 	为主从复制起点,(初始化后的位置),如果不初始化可以从0开始
 # MASTER_HOST		Master主机地址
 # MASTER_PORT		Master主机端口
 # MASTER_USER		Master用户
 # MASTER_PASSWORD	Master用户密码
 # MASTER_LOG_FILE	Master binlog文件
-```
 
-##### Slave  服务 #####
-
-```mysql
-# 启动slave，开启主从复制
-mysql> start slave;
-# 查看 slave 状态
-mysql> show slave status \G;
+# 启动Slave
+start slave;
+# 查看Slave状态
+show slave status \G;
 # 停止slave服务
-mysql> stop slave;
+stop slave;
 ```
 
+**从库的binlog是否写⼊？**
 
+-  默认情况下是不写⼊的：因为写⼊binlog会消耗I/O，所以性能会下降，如果需要在从库上恢复数 据就到Relay Log⾥进⾏导出处理 
+- 直接在从库上操作更⾏语句则会写⼊binlog 
+- 如果就是需要写⼊？在从库的my.cnf : log_slave_updates=on #开启同步并写⼊binlog 
+- 开启同步并写⼊binlog应⽤于从到从的情况
 
-### GTID方式实现主从 ###
+**同步部分表**
 
-**1. 与日志方式的不同点：**
+修改配置文件
 
-- 需要在 主 从 服务器加上参数
+```properties
+#============Master配置⽂件
+#不同步哪些数据库
+binlog-ignore-db=mysql
+binlog-ignore-db=test
+binlog-ignore-db=information_schema
+#同步哪些库
+binlog-do-db=game
+binlog-do-db=mydb
+#==========Slave配置⽂件
+#复制哪些数据库
+replicate-do-db=mydb
+replicate-do-db=game
+#不复制哪些数据库
+replicate-ignore-db=mysql
+replicate-ignore-db=test
+--replicate-wild-ignore-table=foo%.bar% 
+#不复制使⽤表名称以开头foo且表名称以开头的表的更新bar
 
-```shell
-#在上⾯的基础上，需要给主从服务器都加上
-gtid_mode=on
-enforce_gtid_consistency=on #开启强制GTID的⼀致性确保事务
 ```
 
+#### 7.2.2. 配置主从服务（ GTID的⽅式） ####
 
+与binlog日志点的方式一致
 
-- GTID 复制链路启动
+不同点：
 
-```mysql
-mysql>
-CHANGE MASTER TO
-MASTER_HOST='192.168.0.102',
-MASTER_PORT=3306,
-MASTER_USER='syncuser',
-MASTER_PASSWORD='123456',
-MASTER_AUTO_POSITION=1;
-```
+- 主从服务器的参数有不同的地⽅
 
-**2.启动GTID后以下数据库操作不可用**
+  ```properties
+  #在上⾯的基础上，需要给主从服务器都加上
+  gtid_mode=on
+  #开启强制GTID的⼀致性确保事务
+  enforce_gtid_consistency=on 
+  ```
 
-- create table tableName.... select
-- 在⼀个事务中创建临时表
-- 在⼀个transaction中更新innoDB表和myisam表
+- GTID下复制链路的启动
 
+  ```mysql
+  CHANGE MASTER TO
+  MASTER_HOST='192.168.0.102',
+  MASTER_PORT=3306,
+  MASTER_USER='syncuser',
+  MASTER_PASSWORD='123456',
+  MASTER_AUTO_POSITION=1;
+  ```
 
+- 启动GTID后以下数据库操作不可⽤
+  - create table tableName.... select 
+  - 在⼀个事务中创建临时表 
+  - 在⼀个transaction中更新innoDB表和myisam表
 
-### MySQL主从复制模式 ###
+#### 7.2.3. 数据主从复制⽅式的容灾处理
+
+##### 7.2.3.1. MySQL⽀持的复制格式
+
+-  基于语句的复制（statement）
+  - 优点：记录少，只记录执⾏语句，易懂 
+  - 缺点：insert into table1(create_time) values(now())，这个now就不是当时的时间了
+- 基于⾏复制（row）
+  - 优点：⼏乎没有基于⾏复制⽆法处理的场景 
+  - 缺点：数据量太⼤了
+- 混合类型的复制（MIXED）
+  - mixed格式默认采⽤statement，⽐如⽤到UUID()，ROW_COUNT()
+
+##### 7.2.3.2. 主从切换
+
+// TODO
+
+##### 7.2.3.3. MySQL主从复制模式 #####
 
 - 异步复制
 
@@ -1083,9 +1374,17 @@ MASTER_AUTO_POSITION=1;
   rpl_semi_sync_master_timeout #单位是毫秒，如果主库等待从库回复超过这个时间就⾃动切换为异步
   ```
 
-  
+**问题？** 
 
-### 延时同步 ###
+- 做过主从复制，主从⼀般都是实时的同步的？ 
+- update tableName set score=99; 
+- 从库是不是也会被直接更新掉？
+-  ⼀般情况下，我的从库对数据的实时性要求都不是⾮常⾼ 
+- 如果我们有⼀个从库更新可以延时10分钟 
+- 如果运⽓好，在你拿到10分钟前的数据和你更新之间这个表没有操作，是不是完美解决？ 
+- 设置⼀个从库，将延迟时间设置成我们能处理和反应的周期⻓度即可
+
+**延时同步**
 
 如果在条件允许下，可以设置一台延时同步的 Slave，出现问题能够及时停止，恢复数据
 
@@ -1095,9 +1394,8 @@ mysql> change master to master_delay=600; #单位是秒, SQL_Delay: 600
 mysql> start slave;
 ```
 
-
-
 ```shell
+#=============日志配置项=====================
 #查询日志，默认不开启
 general_log=ON
 general_log_file=/var/log/mysql/mysql_general.log
@@ -1124,7 +1422,6 @@ skip_slave_start=ON
 master_info_repository=TABLE
 relay_log_info_repository=TABLE
 
-
 # 密码 iIU-ZHv75#j3
 ```
 
@@ -1132,28 +1429,36 @@ relay_log_info_repository=TABLE
 
 
 
-## 7、MySQL 高可用双主复制模式(基于GTID) ##
+### 7.3. MySQL 高可用集群双主复制模式(基于GTID) ###
 
+![image-20200318110851929](./assets/mysql/image-20200318110851929.png)
 
+为什么，⽹上有很多的教程，讲keepalived，都是在局域⽹或虚拟机上？阿⾥云ECS不⽀持浮动IP 
 
-双主模式下，如果是自增ID，将其初始值设置成不一样
+- 阿⾥云提⼯单，让其开通havip（⾼可⽤虚拟ip） 
+- 到专有VPC⽹络⾼可⽤虚拟IP去创建⾼可⽤虚拟IP 
+- 这个虚拟IP使⽤在keepalived⾥，keepalived在阿⾥服务器上只能设置单播⽅式 
+
+GTID主从同步，从库会和主库进⾏GTID的⽐对，如果从库⾥没有就会从主库的Binlog⾥取，如果有就 不会同步了 
+
+双主的情况下会出现什么问题？
+
+- 双主模式下，如果是自增ID，将其初始值设置成不一样
 
 ```shell
 auto_increment_offset=1 #初始值
 auto_increment_increment=2 #增⻓量
 ```
 
-双主都要开启binlog写入
+- 双主都要开启binlog写入
 
 ```shell
 log_slave_updates=on
 ```
 
+![image-20200318111041226](./assets/mysql/image-20200318111041226.png)
 
-
-修改配置
-
-#### **配置 基本一致(部分不一致)** ####
+#### **7.3.1. 配置 基本一致(部分不一致)** ####
 
 ```shell
 # binlog 配置
@@ -1198,7 +1503,7 @@ log_slave_updates=on
 
 
 
-#### 复制链路 ####
+#### 7.3.2. 复制链路 ####
 
 ```mysql
 mysql>
@@ -1243,3 +1548,39 @@ INSERT INTO actor VALUES(2,'NICK','WAHLBERG','2006-02-15 04:34:33')
 ```
 
 2. 双主 binlog 使用相同的方式记录(row|statement)
+
+#### 7.3.3. 集群架构分析 ####
+
+**MHA集群结构**
+
+Master High Availiability 是⼀款开源的MySQL⾼可⽤程序
+
+**MMM集群结构**
+
+MMM Master-Master repliaciton manger for MySQL 是⼀套⽀持双主的故障切换管理的的第三⽅软件，是Perl开发的，虽然是双主模式，但同⼀业务时间只 允许⼀个节点进⾏写⼊操作
+
+**其他集群结构**
+
+- MySQL+DRDB 
+- MySQL+MGR架构 
+- MySQL官⽅Cluster架构
+
+**单体业务应⽤产品分析到项⽬实施**
+
+1、项⽬或产品需求过来了，你们是怎么做的？
+
+2、做的过程中如果对我们的产品功能需求进⾏分析？ 
+
+3、如何形成书⾯的内容进⾏汇报 
+
+BOSS过来说我们要做个什么？最头⼤的问题是什么？ 
+
+开发⼈员经常性的⼀种⾏为习惯：希望明确好需求你说咋做我们就咋做 
+
+你作为公司的技术负责⼈，你需不需要⾯对需求，你需不需要⾯对所有的环节？ 
+
+很多开发⼈员害怕写⽂档，为什么害怕写⽂档，只有真正落到纸⾯上，你才会认真思考 脑海⾥的东⻄是⽆法结构化的 
+
+没有⽂档你就没有真正去深思这个东⻄真的是否可⾏ 
+
+开发还有⼀个习惯：到哪个公司后都会说，咱们有没有这⽅⾯的模版？
