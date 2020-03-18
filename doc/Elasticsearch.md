@@ -3,7 +3,7 @@
 ##  目录
 
 - [一、分布式搜索引擎ElasticSearch基础](#一分布式搜索引擎ElasticSearch基础)
-  - [1. 什么是分布式搜索引擎,搜索引擎对比选型分析](#1-什么是分布式搜索引擎,搜索引擎对比选型分析)
+  - [1. 什么是分布式搜索引擎,搜索引擎对比选型分析](#1-什么是分布式搜索引擎搜索引擎对比选型分析)
   - [2. ElastchSearch核心术语学习](#2-ElastchSearch核心术语学习)
   - [3. 什么是倒排索引](#3-什么是倒排索引)
   - [4. ElasticSearch单机部署安装](#4-ElasticSearch单机部署安装)
@@ -11,7 +11,7 @@
   - [6. 索引创建的基本操作](#6-索引创建的基本操作)
   - [7. mappings自定义创建设置与analyze](#7-mappings自定义创建设置与analyze)
   - [8. document文档增删改查与乐观锁](#8-document文档增删改查与乐观锁)
-  - [9. ES中的分词类型，添加中文分词器](#9-ES中的分词类型，添加中文分词器)
+  - [9. ES中的分词类型，添加中文分词器](#9-ES中的分词类型添加中文分词器)
 - [二、分布式搜索引擎ElasticSearch查询](#二分布式搜索引擎ElasticSearch查询)
   - [1. Elasticsearch进行基础数据搭建及QueryString查询](#1-Elasticsearch进行基础数据搭建及QueryString查询)
   - [2. Elasticsearch的DSL查询语法](#2-Elasticsearch的DSL查询语法)
