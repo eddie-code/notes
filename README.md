@@ -1,4 +1,7 @@
 ## 工作学习笔记目录
+- [分布式事务-mycat&sharding-jdbc](./doc/分布式事务设计.md)
+- [分布式系统全局ID-mycat&sharding-jdbc](./doc/分布式全局id设计.md)
+
   - [MySQL介绍与环境搭建](./doc/mysql.md)
   - [海量数据存储&访问-数据切分(分库分表)](./doc/massdata_store_access_1.md)
   - [分布式搜索引擎ElasticSearch](./doc/Elasticsearch.md)
