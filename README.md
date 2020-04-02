@@ -1,4 +1,5 @@
 ## 工作学习笔记目录
+- [分布式限流设计](./doc/relimit.md)
 - [分布式事务-mycat&sharding-jdbc](./doc/分布式事务设计.md)
 - [分布式系统全局ID-mycat&sharding-jdbc](./doc/分布式全局id设计.md)
 - [MySQL介绍与环境搭建](./doc/mysql.md)
@@ -12,4 +13,6 @@
 - [redis分析](./doc/redis.md)
 - [zookeeper分布式锁](./doc/zk_lock.md)
 - [docker入门](./doc/docker.md)
+- [高并发与多线程](./doc/高并发与多线程.md)
+- [书籍_小灰算法之旅](./doc/书籍_小灰算法之旅.md)
 
