@@ -1,14 +1,6 @@
 [TOC]
 
-## [模块]
 
-- [微服务架构设计开篇](./微服务架构设计.md)
-
-- [SpringCloud服务治理](./SpringCloud服务治理.md)
-
-- [SpringCloud负载均衡与远程调用](#SpringCloud负载均衡与远程调用)
-
-  
 
 ## 目录
 
