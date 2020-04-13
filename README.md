@@ -7,8 +7,8 @@
 - [微服务-SpringCloud](./doc/微服务架构设计.md)
   - [微服务架构设计开篇](./doc/微服务架构设计.md)
   - [SpringCloud服务治理](./doc/SpringCloud服务治理.md)
-
   - [SpringCloud负载均衡与远程调用](./doc/SpringCloud负载均衡与远程调用.md)
+  - [SpringCloud配置中心与Bus总线](./doc/config-bus.md)
 - [分布式限流设计](./doc/relimit.md)
 - [分布式事务-mycat&sharding-jdbc](./doc/分布式事务设计.md)
 - [分布式系统全局ID-mycat&sharding-jdbc](./doc/分布式全局id设计.md)
