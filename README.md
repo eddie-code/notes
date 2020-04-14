@@ -9,7 +9,7 @@
   - [SpringCloud服务治理](./doc/SpringCloud服务治理.md)
   - [SpringCloud负载均衡与远程调用](./doc/SpringCloud负载均衡与远程调用.md)
   - [SpringCloud降级与熔断](./doc/hystrix.md)
-- [SpringCloud配置中心与Bus总线](./doc/config-bus.md)
+  - [SpringCloud配置中心与Bus总线](./doc/config-bus.md)
   - [SpringCloud微服务网关](./doc/gateway.md)
 - [分布式限流设计](./doc/relimit.md)
 - [分布式事务-mycat&sharding-jdbc](./doc/分布式事务设计.md)
