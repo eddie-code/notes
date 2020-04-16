@@ -3,15 +3,18 @@
 ## 目录
 
 - [1. 服务网关在微服务中的应用](#1-服务网关在微服务中的应用)
-- [2. 第二代网关Gateway](#2-第二代网关Gateway)
-- [3. Gateway快速落地实施](#3-Gateway快速落地实施)
+- [2. 第二代网关Gateway](#2-第二代网关gateway)
+- [3. Gateway快速落地实施](#3-gateway快速落地实施)
 - [4. 路由功能详解](#4-路由功能详解)
 - [5. 断言功能详解](#5-断言功能详解)
 - [6. 实现断言的配置](#6-实现断言的配置)
-- [7. 通过After断言实现定时秒杀](#7-通过After断言实现定时秒杀)
+- [7. 通过After断言实现定时秒杀](#7-通过after断言实现定时秒杀)
 - [8. 过滤器原理和生命周期](#8-过滤器原理和生命周期)
 - [9. 自定义过滤器实现接口计时功能](#9-自定义过滤器实现接口计时功能)
 - [10. 权限认证方案分析](#10-权限认证方案分析)
+- [11. 实现服务网关层JWT鉴权](#11-实现服务网关层jwt鉴权)
+- [12. 实现服务网关层统一异常返回](#12-实现服务网关层统一异常返回)
+- [13. 实现服务网关限流](#13-实现服务网关限流)
 
 
 
@@ -729,3 +732,837 @@ JWT的Access Token由三个部分构成，分别是Header、Payload和Signature�
 目前实现JWT的开源组件非常多，如果决定使用这个方案，只要添加任意一个开源JWT实现的依赖项到项目的pom文件中，然后在加解密时调用该组件来完成
 
 **目前来说应用比较广泛的三种方案就是JWT、OAuth和spring-session+redis**
+
+
+
+# 11. 实现服务网关层JWT鉴权
+
+通过以下几步完成鉴权操作
+
+- 创建auth-service（登录，鉴权等服务）
+- 添加JwtService类实现token创建和验证
+- 网关层集成auth-service（添加AuthFilter到网关层，如果没有登录则返回403）
+
+在gateway里创建一个auth-service-api
+
+添加POM依赖
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <artifactId>spring-cloud-project</artifactId>
+        <groupId>com.icodingedu</groupId>
+        <version>1.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+    <packaging>jar</packaging>
+    <artifactId>auth-service-api</artifactId>
+    <name>auth-service-api</name>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-openfeign</artifactId>
+        </dependency>
+    </dependencies>
+</project>
+```
+
+创建一个entity包，创建一个账户实体对象
+
+```java
+package com.icodingedu.springcloud.entity;
+
+import com.sun.tracing.dtrace.ArgsAttributes;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class Account implements Serializable {
+
+    private String username;
+
+    private String token;
+
+    //当token接近失效的时候可以用refreshToken生成一个新的token
+    private String refreshToken;
+}
+```
+
+在entity包下，创建一个AuthResponse类
+
+```java
+package com.icodingedu.springcloud.entity;
+
+public class AuthResponse {
+
+    public static final Long SUCCESS = 1L;
+
+    public static final Long INCORRECT_PWD = 1000L;
+
+    public static final Long USER_NOT_FOUND = 1001L;
+  
+  	public static final Long INVALID_TOKEN = 1002L;
+}
+```
+
+在entity包下创建一个AuthResponse处理结果类
+
+```java
+package com.icodingedu.springcloud.tools;
+
+import com.icodingedu.springcloud.pojo.Account;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class AuthResponse {
+
+    private Account account;
+
+    private Long code;
+}
+```
+
+创建一个service包在里面创建接口AuthService
+
+```java
+package com.icodingedu.springcloud.service;
+
+import com.icodingedu.springcloud.entity.AuthResponse;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseBody;
+
+@FeignClient("auth-service")
+public interface AuthService {
+
+    @PostMapping("/login")
+    @ResponseBody
+    public AuthResponse login(@RequestParam("username") String username,
+                              @RequestParam("password") String password);
+
+    @GetMapping("/verify")
+    @ResponseBody
+    public AuthResponse verify(@RequestParam("token") String token,
+                               @RequestParam("username") String username);
+
+    @PostMapping("/refresh")
+    @ResponseBody
+    public AuthResponse refresh(@RequestParam("refresh") String refreshToken);
+}
+```
+
+创建服务实现的auth-service的module，还是放在gateway目录下
+
+导入POM依赖
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <artifactId>spring-cloud-project</artifactId>
+        <groupId>com.icodingedu</groupId>
+        <version>1.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+    <packaging>jar</packaging>
+    <artifactId>auth-service</artifactId>
+    <name>auth-service</name>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!--redis用来存放生成的token和refresh token的,本地token要启动-->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+        <!--jwt-->
+        <dependency>
+            <groupId>com.auth0</groupId>
+            <artifactId>java-jwt</artifactId>
+            <version>3.7.0</version>
+        </dependency>
+        <dependency>
+            <groupId>com.icodingedu</groupId>
+            <artifactId>auth-service-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+    </dependencies>
+</project>
+```
+
+创建启动类application
+
+```java
+package com.icodingedu.springcloud;
+
+import org.springframework.boot.WebApplicationType;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.builder.SpringApplicationBuilder;
+import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
+
+@EnableDiscoveryClient
+@SpringBootApplication
+public class AuthServiceApplication {
+
+    public static void main(String[] args) {
+        new SpringApplicationBuilder(AuthServiceApplication.class)
+                .web(WebApplicationType.SERVLET)
+                .run(args);
+    }
+}
+```
+
+创建一个service包，建立JwtService类
+
+```java
+package com.icodingedu.springcloud.service;
+
+import com.auth0.jwt.JWT;
+import com.auth0.jwt.algorithms.Algorithm;
+import com.auth0.jwt.interfaces.JWTVerifier;
+import com.icodingedu.springcloud.entity.Account;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.util.Date;
+
+@Slf4j
+@Service
+public class JwtService {
+    //生产环境中应该从外部加密后传入
+    private static final String KEY = "you must change it";
+    //生产环境中应该从外部加密后传入
+    private static final String ISSUER = "icodingedu";
+    //定义个过期时间
+    private static final long TOKEN_EXP_TIME = 60000;
+    //定义传入的参数名
+    private static final String USERNAME = "username";
+
+    /**
+     * 生成token
+     * @param account 账户信息
+     * @return token
+     */
+    public String token(Account account){
+        //生成token的时间
+        Date now = new Date();
+        //生成token所要用到的算法
+        Algorithm algorithm = Algorithm.HMAC256(KEY);
+
+        String token = JWT.create()
+                .withIssuer(ISSUER) //发行方,解密的时候依然要验证,即便拿到了key不知道发行方也无法解密
+                .withIssuedAt(now) //这个key是在什么时间点生成的
+                .withExpiresAt(new Date(now.getTime() + TOKEN_EXP_TIME)) //过期时间
+                .withClaim(USERNAME,account.getUsername()) //传入username
+                //.withClaim(ROLE,"roleName") 还可以传入其他内容
+                .sign(algorithm); //用前面的算法签发
+        log.info("jwt generated user={}",account.getUsername());
+        return token;
+    }
+
+    /**
+     * 验证token
+     * @param token
+     * @param username
+     * @return
+     */
+    public boolean verify(String token,String username){
+        log.info("verify jwt - user={}",username);
+        try{
+            //加密和解密要一样
+            Algorithm algorithm = Algorithm.HMAC256(KEY);
+            //构建一个验证器:验证JWT的内容,是个接口
+            JWTVerifier verifier = JWT.require(algorithm)
+                    .withIssuer(ISSUER) //前面加密的内容都可以验证
+                    .withClaim(USERNAME,username)
+                    .build();
+            //这里有任何错误就直接异常了
+            verifier.verify(token);
+            return true;
+        }catch (Exception ex){
+            log.error("auth failed",ex);
+            return false;
+        }
+    }
+}
+```
+
+创建controller包，建立JwtController类
+
+```java
+package com.icodingedu.springcloud.controller;
+
+import com.icodingedu.springcloud.entity.Account;
+import com.icodingedu.springcloud.entity.AuthResponse;
+import com.icodingedu.springcloud.entity.AuthResponseCode;
+import com.icodingedu.springcloud.service.AuthService;
+import com.icodingedu.springcloud.service.JwtService;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.UUID;
+
+@RestController
+@Slf4j
+public class JwtController implements AuthService{
+
+    @Autowired
+    private JwtService jwtService;
+
+    @Autowired
+    private RedisTemplate redisTemplate;
+
+    @Override
+    public AuthResponse login(String username, String password) {
+        Account account = Account.builder()
+                .username(username)
+                .build();
+        //TODO 0-这一步需要验证用户名和密码,一般是在数据库里,假定验证通过了
+        //1-生成token
+        String token = jwtService.token(account);
+        account.setToken(token);
+        //这里保存拿到新token的key
+        account.setRefreshToken(UUID.randomUUID().toString());
+
+        //3-保存token,把token保存起来在refresh时才知道更新关联哪个token
+        redisTemplate.opsForValue().set(account.getRefreshToken(),account);
+
+        //2-返回token
+        return AuthResponse.builder()
+                .account(account)
+                .code(AuthResponseCode.SUCCESS)
+                .build();
+    }
+
+    @Override
+    public AuthResponse verify(String token, String username) {
+
+        boolean flag = jwtService.verify(token, username);
+
+        return AuthResponse.builder()
+                .code(flag?AuthResponseCode.SUCCESS:AuthResponseCode.INVALID_TOKEN)
+                .build();
+    }
+
+    @Override
+    public AuthResponse refresh(String refreshToken) {
+        //当使用redisTemplate保存对象时,对象必须是一个可被序列化的对象
+        Account account = (Account) redisTemplate.opsForValue().get(refreshToken);
+        if(account == null){
+            return AuthResponse.builder()
+                    .code(AuthResponseCode.USER_NOT_FOUND)
+                    .build();
+        }
+        String token = jwtService.token(account);
+        account.setToken(token);
+        //更新新的refreshToke
+        account.setRefreshToken(UUID.randomUUID().toString());
+        //将原来的删除
+        redisTemplate.delete(refreshToken);
+        //添加新的token
+        redisTemplate.opsForValue().set(account.getRefreshToken(),account);
+
+        return AuthResponse.builder()
+                .account(account)
+                .code(AuthResponseCode.SUCCESS)
+                .build();
+    }
+}
+```
+
+设置application配置文件
+
+```properties
+spring.application.name=auth-service
+server.port=65100
+
+eureka.client.serviceUrl.defaultZone=http://localhost:20001/eureka/
+
+spring.redis.host=localhost
+spring.redis.database=0
+spring.redis.port=6379
+
+info.app.name=auth-service
+info.app.description=test
+
+management.security.enabled=false
+management.endpoints.web.exposure.include=*
+management.endpoint.health.show-details=always
+```
+
+可以启动验证一下：先启动eureka-server，再启动auth-server
+
+在PostMan里进行验证：login，verify，refresh都测试一下
+
+**开始改造gateway-sever**
+
+POM里引入依赖，增加下面三个依赖
+
+```xml
+        <!--因为spring cloud gateway是基于webflux的,如果需要web则是导入spring-boot-starter-webflux而不是spring-boot-starter-web-->
+        <dependency>
+            <groupId>com.icodingedu</groupId>
+            <artifactId>auth-service-api</artifactId>
+            <version>${project.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-starter-web</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+				<!--工具类,进行一下StringUtil的操作-->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+            <version>3.5</version>
+        </dependency>
+        <dependency>
+            <groupId>com.auth0</groupId>
+            <artifactId>java-jwt</artifactId>
+            <version>3.7.0</version>
+        </dependency>
+```
+
+创建一个新的类：AuthFilter
+
+```java
+package com.icodingedu.springcloud.filter;
+
+import com.icodingedu.springcloud.entity.AuthResponse;
+import com.icodingedu.springcloud.service.AuthService;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cloud.gateway.filter.GatewayFilter;
+import org.springframework.cloud.gateway.filter.GatewayFilterChain;
+import org.springframework.core.Ordered;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.http.server.reactive.ServerHttpResponse;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Mono;
+
+@Slf4j
+@Component
+public class AuthFilter implements GatewayFilter, Ordered {
+
+    private static final String AUTH = "Authorization";
+    private static final String USERNAME = "icodingedu-username";
+    
+    @Autowired
+    private RestTemplate restTemplate;
+
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        log.info("Auth Start");
+        ServerHttpRequest request = exchange.getRequest();
+        HttpHeaders header = request.getHeaders();
+        String token = header.getFirst(AUTH);
+        String username = header.getFirst(USERNAME);
+
+        ServerHttpResponse response = exchange.getResponse();
+        if(StringUtils.isBlank(token)){
+            log.error("token not found");
+            response.setStatusCode(HttpStatus.UNAUTHORIZED);
+            return response.setComplete();
+        }
+
+        String path = String.format("http://auth-service/verify?token=%s&username=%s",token,username);
+        AuthResponse resp = restTemplate.getForObject(path,AuthResponse.class);
+
+
+        if(resp.getCode() != 1L){
+            log.error("invalid token");
+            response.setStatusCode(HttpStatus.FORBIDDEN);
+            return response.setComplete();
+        }
+        //将用户信息再次存放在请求的header中传递给下游
+        ServerHttpRequest.Builder mutate = request.mutate();
+        mutate.header(USERNAME,username);
+        ServerHttpRequest buildRequest = mutate.build();
+
+        //如果响应中需要放数据，可以放在response的header中
+        response.setStatusCode(HttpStatus.OK);
+        response.getHeaders().add("icoding-user",username);
+
+        return chain.filter(exchange.mutate()
+                            .request(buildRequest)
+                            .response(response)
+                            .build());
+    }
+
+    @Override
+    public int getOrder() {
+        return 0;
+    }
+}
+```
+
+给gateway-server的application启动类加上RestTemplate实现
+
+```java
+package com.icodingedu.springcloud;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
+import org.springframework.cloud.client.loadbalancer.LoadBalanced;
+import org.springframework.context.annotation.Bean;
+import org.springframework.web.client.RestTemplate;
+
+@SpringBootApplication
+@EnableDiscoveryClient
+public class GatewayServerApplication {
+
+    @Bean
+    @LoadBalanced
+    public RestTemplate restTemplate(){
+        return new RestTemplate();
+    }
+
+    public static void main(String[] args) {
+        SpringApplication.run(GatewayServerApplication.class,args);
+    }
+}
+```
+
+AuthFilter注入到configuration中的，只需要注入并加入过滤器即可
+
+# 12. 实现服务网关层统一异常返回
+
+## 12.1. 异常的种类
+
+网关层的异常分为以下两种：
+
+- **调用请求异常** 通常由调用请求直接抛出的异常，比如在订单服务中直接报错
+
+  `throw new RuntimeException("error")`
+
+- **网关层异常** 由网关层触发的异常，比如Gateway通过服务发现找不到可用节点，或者任何网关层内部的问题。这部分异常通常是在实际调用请求发起之前发生的。
+
+在以上两种问题中，网关层只应该关注第二个点，也就是自身异常。在实际应用中我们应该尽量保持网关层的“纯洁性”并且做好职责划分，Gateway只要做好路由的事情，不要牵扯到具体业务层的事儿，最好也不要替调用请求的异常操心。对于业务调用中的异常情况，如果需要采用统一格式封装调用异常，那就交给每个具体服务去定义结构，让各自业务方和前端页面协调好异常消息的结构。
+
+但是在实际项目中，不能保证每个接口都实现了异常封装，如果想给前台页面一个统一风格的JSON格式异常结构，那就需要让Gateway做一些分外的事儿，比如拦截Response并修改返回值。（还是强烈建议让服务端自己定义异常结构，因为Gateway本身不应该对这些异常做额外封装只是原封不动的返回）
+
+Gateway已经将网关层直接抛出的异常（没有调用远程服务之前的异常）做了结构化封装，对于POST的调用来说其本身也会返回结构化的异常信息，但是对于GET接口的异常来说，则是直接返回一个HTML页面，前端根本无法抓取具体的异常信息。所以我们这里主要聚焦在如何处理**调用请求异常**。
+
+## 12.2. 自定义异常封装
+
+装饰器编程模式+代理模式，给Gateway加一层处理，改变ResponseBody中的数据结构
+
+**代理模式 - BodyHackerFunction接口**
+
+在最开始我们先定义一个代理模式的接口
+
+```java
+package com.icodingedu.springcloud.tools;
+
+import org.reactivestreams.Publisher;
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.http.server.reactive.ServerHttpResponse;
+import reactor.core.publisher.Mono;
+
+import java.util.function.BiFunction;
+
+public interface BodyHackerFunction extends
+        BiFunction<ServerHttpResponse, Publisher<? extends DataBuffer>, Mono<Void>> {
+}
+```
+
+这里引入代理模式是为了将装饰器和具体业务代理逻辑拆分开来，在装饰器中只需要依赖一个代理接口，而不需要和具体的代理逻辑绑定起来
+
+**装饰器模式 - BodyHackerDecrator**
+
+接下来我们定义一个装饰器类，这个装饰器继承自ServerHttpResponseDecorator类，我们这里就用装饰器模式给Response Body的构造过程加上一层特效
+
+```java
+package com.icodingedu.springcloud.tools;
+
+import org.reactivestreams.Publisher;
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.http.server.reactive.ServerHttpResponse;
+import org.springframework.http.server.reactive.ServerHttpResponseDecorator;
+import reactor.core.publisher.Mono;
+
+public class BodyHackerHttpResponseDecorator extends ServerHttpResponseDecorator {
+
+    /**
+     * 负责具体写入Body内容的代理类
+     */
+    private BodyHackerFunction delegate = null;
+
+    public BodyHackerHttpResponseDecorator(BodyHackerFunction bodyHandler, ServerHttpResponse delegate) {
+        super(delegate);
+        this.delegate = bodyHandler;
+    }
+
+    @Override
+    public Mono<Void> writeWith(Publisher<? extends DataBuffer> body) {
+        return delegate.apply(getDelegate(), body);
+    }
+}
+```
+
+这个装饰器的构造方法接收一个BodyHancker代理类，其中的关键方法writeWith就是用来向Response Body中写入内容的。这里我们覆盖了该方法，使用代理类来托管方法的执行，而在整个装饰器类中看不到一点业务逻辑，这就是我们常说的单一职责。
+
+**创建Filter**
+
+```java
+package com.icodingedu.springcloud.filter;
+
+import com.icodingedu.springcloud.tools.BodyHackerFunction;
+import com.icodingedu.springcloud.tools.BodyHackerHttpResponseDecorator;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.cloud.gateway.filter.GatewayFilter;
+import org.springframework.cloud.gateway.filter.GatewayFilterChain;
+import org.springframework.core.Ordered;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.stereotype.Component;
+import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+@Component
+@Slf4j
+public class ErrorFilter implements GatewayFilter, Ordered {
+
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        final ServerHttpRequest request = exchange.getRequest();
+        // TODO 这里定义写入Body的逻辑
+        BodyHackerFunction delegate = (resp, body) -> Flux.from(body)
+                .flatMap(orgBody -> {
+                    // 原始的response body
+                    byte[] orgContent = new byte[orgBody.readableByteCount()];
+                    orgBody.read(orgContent);
+
+                    String content = new String(orgContent);
+                    log.info("original content {}", content);
+
+                    // 如果500错误，则替换
+                    if (resp.getStatusCode().value() == 500) {
+                        content = String.format("{\"status\":%d,\"path\":\"%s\"}",
+                                resp.getStatusCode().value(),
+                                request.getPath().value());
+                    }
+
+                    // 告知客户端Body的长度，如果不设置的话客户端会一直处于等待状态不结束
+                    HttpHeaders headers = resp.getHeaders();
+                    headers.setContentLength(content.length());
+                    return resp.writeWith(Flux.just(content)
+                            .map(bx -> resp.bufferFactory().wrap(bx.getBytes())));
+                }).then();
+
+        // 将装饰器当做Response返回
+        BodyHackerHttpResponseDecorator responseDecorator = new BodyHackerHttpResponseDecorator(delegate, exchange.getResponse());
+
+        return chain.filter(exchange.mutate().response(responseDecorator).build());
+    }
+
+    @Override
+    public int getOrder() {
+        // WRITE_RESPONSE_FILTER的执行顺序是-1，我们的Hacker在它之前执行
+        return -2;
+    }
+}
+```
+
+在这个Filter中，我们定义了一个装饰器类BodyHackerHttpResponseDecorator，同时声明了一个匿名内部类(代码TODO部分)，实现了BodyHackerFunction代理类的Body替换逻辑，并且将这个代理类传入了装饰器。这个装饰器将直接参与构造Response Body。
+
+我们还覆盖了getOrder方法，是为了确保我们的filter在默认的Response构造器之前执行
+
+我们对500的HTTP Status做了特殊定制，使用我们自己的JSON内容替换了原始内容，同学们可以根据需要向JSON中加入其它参数。对于其他非500 Status的Response来说，我们还是返回初始的Body。
+
+我们在feign-client-advanced的GatewayController中定一个500的错误方法进行测试
+
+```java
+    @GetMapping("/valid")
+    public String valid(){
+        int i = 1/0;
+        return "Page Test Success";
+    }
+```
+
+ErrorFilter的注入方式同之前的过滤器一样
+
+# 13. 实现服务网关限流
+
+创建一个限流配置类RedisLimiterConfiguration
+
+```java
+package com.icodingedu.springcloud.config;
+
+import org.springframework.cloud.gateway.filter.ratelimit.KeyResolver;
+import org.springframework.cloud.gateway.filter.ratelimit.RedisRateLimiter;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+import reactor.core.publisher.Mono;
+
+@Configuration
+public class RedisLimiterConfiguration {
+    // ID: KEY 限流的业务标识
+    // 我们这里根据用户请求IP地址进行限流
+    @Bean
+    @Primary //一个系统不止一个KeyResolver
+    public KeyResolver remoteAddressKeyResolver(){
+        return exchange -> Mono.just(
+            exchange.getRequest()
+                    .getRemoteAddress()
+                    .getAddress()
+                    .getHostAddress()
+        );
+    }
+
+    @Bean("redisLimiterUser")
+    @Primary
+    public RedisRateLimiter redisRateLimiterUser(){
+        //这里可以自己创建一个限流脚本,也可以使用默认的令牌桶
+        //defaultReplenishRate:限流桶速率,每秒10个
+        //defaultBurstCapacity:桶的容量
+        return new RedisRateLimiter(10,60);
+    }
+
+    @Bean("redisLimiterProduct")
+    public RedisRateLimiter redisRateLimiterProduct(){
+        //这里可以自己创建一个限流脚本,也可以使用默认的令牌桶
+        //defaultReplenishRate:限流桶速率,每秒10个
+        //defaultBurstCapacity:桶的容量
+        return new RedisRateLimiter(20,100);
+    }
+}
+```
+
+配置application.yaml 中的redis信息
+
+```yaml
+spring:
+  application:
+    name: gateway-server
+  redis:
+    host: localhost
+    port: 6379
+    database: 0
+  main:
+    allow-bean-definition-overriding: true
+```
+
+在GatewayConfiguration中进行配置加入RedisLimiter的配置
+
+```java
+package com.icodingedu.springcloud.config;
+
+import com.icodingedu.springcloud.filter.AuthFilter;
+import com.icodingedu.springcloud.filter.ErrorFilter;
+import com.icodingedu.springcloud.filter.TimerFilter;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.cloud.gateway.filter.ratelimit.KeyResolver;
+import org.springframework.cloud.gateway.filter.ratelimit.RateLimiter;
+import org.springframework.cloud.gateway.route.RouteLocator;
+import org.springframework.cloud.gateway.route.builder.RouteLocatorBuilder;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpMethod;
+
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+
+@Configuration
+public class GatewayConfiguration {
+
+//    @Autowired
+//    private TimerFilter timerFilter;
+
+    @Autowired
+    private AuthFilter authFilter;
+
+    @Autowired
+    private ErrorFilter errorFilter;
+
+    @Autowired
+    private KeyResolver hostNameResolver;
+
+    @Autowired
+    @Qualifier("redisLimiterUser")
+    private RateLimiter rateLimiterUser;
+
+    @Bean
+    @Order
+    public RouteLocator customerRoutes(RouteLocatorBuilder builder){
+        LocalDateTime ldt1 = LocalDateTime.of(2020,4,12,22,6,30);
+        LocalDateTime ldt2 = LocalDateTime.of(2020,4,12,23,6,35);
+        return builder.routes()
+                .route(r -> r.path("/gavinjava/**")
+                        .and().method(HttpMethod.GET)
+//                        .and().header("name")
+                        .filters(f -> f.stripPrefix(1)
+                            .addResponseHeader("java-param","gateway-config")
+//                            .filter(timerFilter)
+//                            .filter(authFilter)
+                            .filter(errorFilter)
+                            .requestRateLimiter(
+                                c -> {
+                                    c.setKeyResolver(hostNameResolver);
+                                    c.setRateLimiter(rateLimiterUser);
+                                })
+                        )
+                        .uri("lb://FEIGN-CLIENT")
+                )
+                .route(r -> r.path("/secondkill/**")
+                        //.and().after(ZonedDateTime.of(ldt, ZoneId.of("Asia/Shanghai")))
+                        .and().between(ZonedDateTime.of(ldt1, ZoneId.of("Asia/Shanghai")),ZonedDateTime.of(ldt2, ZoneId.of("Asia/Shanghai")))
+                        .filters(f -> f.stripPrefix(1))
+                        .uri("lb://FEIGN-CLIENT")
+                )
+                .build();
+    }
+}
+```
+
+# 
