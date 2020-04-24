@@ -1145,7 +1145,7 @@ POM里引入依赖，增加下面三个依赖
             <exclusions>
                 <exclusion>
                     <groupId>org.springframework.boot</groupId>
-                    <artifactId>spring-boot-starter-web</artifactId>
+                    <artifactId>spring-boot-starter-webflux</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
